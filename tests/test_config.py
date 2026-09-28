@@ -45,6 +45,11 @@ def test_loads_scopes_servers_and_secrets(tmp_path):
         (BASE.replace('read: ["^(get|list)_"]', 'read: ["(unclosed"]'), r"servers\.telegram\.read"),
         (BASE.replace(APPROVAL, ""), "approval: required"),
         (BASE.replace("TG_ME, timeout", "TG_BAD, timeout"), "TG_BAD"),
+        # A bare string would compile per character, and a lone "^" matches every tool name.
+        (BASE.replace('read: ["^(get|list)_"]', 'read: "^(get|list)_"'), r"servers\.telegram\.read: must be a list"),
+        (BASE.replace('write: ["invite"]', 'write: [1]'), r"servers\.telegram\.write: must be a list"),
+        # bool("false") is True.
+        (BASE.replace("trust_annotations: true", 'trust_annotations: "false"'), "must be true or false"),
     ],
 )
 def test_rejects_bad_config(tmp_path, text, message):

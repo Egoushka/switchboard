@@ -76,8 +76,13 @@ def _env(env: Mapping[str, str], name: str, where: str) -> str:
 
 
 def _patterns(where: str, values: Any) -> tuple[re.Pattern[str], ...]:
+    """A list of regex strings. A bare string would compile per character, and "^" alone matches everything."""
+    if values is None:
+        return ()
+    if not isinstance(values, list) or not all(isinstance(p, str) for p in values):
+        raise ConfigError(f"{where}: must be a list of regex strings")
     try:
-        return tuple(re.compile(p) for p in values or [])
+        return tuple(re.compile(p) for p in values)
     except re.error as e:
         raise ConfigError(f"{where}: {e}") from None
 
@@ -142,11 +147,14 @@ def load(path: str, env: Mapping[str, str] = os.environ) -> Config:
     for name, s in (raw.get("servers") or {}).items():
         where = f"servers.{name}"
         _check(where, s, {"about", "read", "write", "trust_annotations"}, frozenset({"about"}))
+        trust = s.get("trust_annotations", False)
+        if not isinstance(trust, bool):  # bool("false") is True
+            raise ConfigError(f"{where}.trust_annotations: must be true or false")
         servers[name] = Server(
             about=s["about"],
             read=_patterns(f"{where}.read", s.get("read")),
             write=_patterns(f"{where}.write", s.get("write")),
-            trust_annotations=bool(s.get("trust_annotations")),
+            trust_annotations=trust,
         )
 
     return Config(
