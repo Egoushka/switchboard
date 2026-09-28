@@ -1,9 +1,19 @@
 import json
+import sys
+import time
 
 import mcp_types as types
 import pytest
 
-from switchboard.shaping import QueryError, ResultCache, drop_empty, render, upstream_chars, window
+from switchboard.shaping import (
+    QueryError,
+    ResultCache,
+    ResultTooLarge,
+    drop_empty,
+    render,
+    upstream_chars,
+    window,
+)
 
 
 def text(s):
@@ -12,7 +22,12 @@ def text(s):
 
 def test_drop_empty_is_recursive_and_keeps_falsy_scalars():
     value = {"a": None, "b": "", "c": [], "d": {}, "e": 0, "f": False, "g": [None, {"h": None}, 1]}
-    assert drop_empty(value) == {"e": 0, "f": False, "g": [1]}
+    assert drop_empty(value) == {"e": 0, "f": False, "g": [None, {}, 1]}
+
+
+def test_drop_empty_keeps_every_list_element_so_positions_hold():
+    rows = {"columns": ["date", "amount", "note"], "rows": [["2026-09-01", None, "rent"]]}
+    assert drop_empty(rows) == rows
 
 
 def test_structured_content_wins_and_its_text_copy_is_dropped():
@@ -49,12 +64,40 @@ def test_upstream_chars_counts_every_text_and_the_structured_copy():
 
 def test_cache_expires_and_evicts_the_oldest():
     now = [0.0]
-    cache = ResultCache(ttl_s=10, max_bytes=10, clock=lambda: now[0])
-    first = cache.put("aaaaaa", 3)
-    second = cache.put("bbbbbb", 3)  # 12 chars > 10: the first goes
-    assert cache.get(first) is None and cache.get(second).text == "bbbbbb"
+    size = sys.getsizeof("aaaaaa")
+    cache = ResultCache(ttl_s=10, max_bytes=size + size // 2, clock=lambda: now[0])
+    first = cache.put("aaaaaa", 3, "homelab")
+    second = cache.put("bbbbbb", 3, "homelab")  # two entries exceed the budget: the first goes
+    assert cache.get(first, "homelab") is None and cache.get(second, "homelab").text == "bbbbbb"
     now[0] = 11
-    assert cache.get(second) is None
+    assert cache.get(second, "homelab") is None
+
+
+def test_cache_counts_real_memory_not_chars():
+    size = sys.getsizeof("я" * 60)  # two bytes per char in CPython, plus the object header
+    cache = ResultCache(ttl_s=10, max_bytes=size + 10)
+    first = cache.put("я" * 60, 10, "homelab")
+    cache.put("я" * 60, 10, "homelab")
+    assert cache.get(first, "homelab") is None
+
+
+def test_cache_ids_are_bound_to_their_scope():
+    cache = ResultCache(ttl_s=10, max_bytes=10_000)
+    rid = cache.put("from homelab", 5, "homelab")
+    assert cache.get(rid, "omi-desktop") is None and cache.get(rid, "homelab").text == "from homelab"
+
+
+def test_a_result_over_the_ceiling_is_refused_without_building_it():
+    bomb = "|".join(["{a:@,b:@}"] * 40)  # doubles the serialized size with every stage
+    started = time.monotonic()
+    with pytest.raises(ResultTooLarge, match="narrow"):
+        render(types.CallToolResult(content=[text('{"k": "v"}')]), bomb, ceiling=10_000)
+    assert time.monotonic() - started < 2
+
+
+def test_plain_text_over_the_ceiling_is_cut_with_a_note():
+    out, _ = render(types.CallToolResult(content=[text("x" * 50)]), ceiling=20)
+    assert out.startswith("x" * 20) and "cut at 20 chars" in out
 
 
 def test_window_adds_a_trailer_until_the_end():

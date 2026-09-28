@@ -242,3 +242,14 @@ async def test_write_is_not_offered_on_a_read_only_scope():
     async with switchboard() as (base, _, writes), mcp(base, "homelab-ro") as client:
         result = await client.call_tool("write", {"tool": "notes_add", "args": {"text": "x"}, "reason": "r"})
     assert result.is_error and writes == []
+
+
+@pytest.mark.anyio
+async def test_a_result_id_does_not_work_in_another_scope():
+    async with switchboard() as (base, _, _):
+        async with mcp(base, "homelab-ro") as client:
+            first = text(await client.call_tool("read", {"tool": "oura_big", "max_chars": 1000}))
+        rid = re.search(r'result_id="(r_[^"]+)"', first).group(1)
+        async with mcp(base, "homelab") as client:
+            other = await client.call_tool("more", {"result_id": rid, "offset": 1000})
+    assert other.is_error and "expired" in text(other)

@@ -82,7 +82,7 @@ class ScopeTools:
         limits = self.cfg.results
         size = limits.max_chars if max_chars is None else max(1, min(max_chars, limits.hard_max_chars))
         if len(text) > size:
-            text = window(text, 0, size, self.results.put(text, size))
+            text = window(text, 0, size, self.results.put(text, size, self.scope.name))
         metrics.result_chars.labels(self.scope.name, tool.server, "upstream").inc(upstream_chars(result))
         metrics.result_chars.labels(self.scope.name, tool.server, "returned").inc(len(text))
         return types.CallToolResult(content=[types.TextContent(type="text", text=text), *extra], is_error=result.is_error)
@@ -181,7 +181,7 @@ class ScopeTools:
         audit.info(json.dumps(line, ensure_ascii=False))
 
     async def more(self, result_id: str, offset: int) -> types.CallToolResult:
-        cached = self.results.get(result_id)
+        cached = self.results.get(result_id, self.scope.name)
         if cached is None:
             raise Refusal("result expired; run the tool again")
         if offset >= len(cached.text):

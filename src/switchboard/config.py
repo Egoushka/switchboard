@@ -29,7 +29,7 @@ class Results:
     max_chars: int = 6000
     hard_max_chars: int = 40000
     cache_ttl_s: float = 600
-    cache_max_bytes: int = 50_000_000
+    cache_max_bytes: int = 32_000_000  # real bytes; well below the 192m container limit
 
 
 @dataclass(frozen=True)
