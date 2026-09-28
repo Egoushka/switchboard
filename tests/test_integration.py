@@ -39,10 +39,16 @@ def fake_upstream():
         writes.append(text)
         return types.CallToolResult(content=[types.TextContent(type="text", text="added")])
 
+    async def notes_slow_add(text: str) -> types.CallToolResult:
+        await anyio.sleep(0.5)
+        writes.append(text)
+        return types.CallToolResult(content=[types.TextContent(type="text", text="added slowly")])
+
     server.add_tool(oura_sleep, name="oura_sleep", description="One night's sleep score and contributors.")
     server.add_tool(oura_big, name="oura_big", description="A very large sleep export.")
     server.add_tool(oura_fail, name="oura_fail", description="Always fails.")
     server.add_tool(notes_add, name="notes_add", description="Add a note.")
+    server.add_tool(notes_slow_add, name="notes_slow_add", description="Add a note, slowly.")
     return server, writes
 
 
@@ -143,7 +149,7 @@ async def test_read_only_scope_lists_four_small_tools_with_the_catalog():
         tools = (await client.list_tools()).tools
     assert [t.name for t in tools] == ["search", "describe", "read", "more"]
     search = next(t for t in tools if t.name == "search")
-    assert "- notes (1 tools): Notes" in search.description and "- oura (3 tools): Oura ring — sleep" in search.description
+    assert "- notes (2 tools): Notes" in search.description and "- oura (3 tools): Oura ring — sleep" in search.description
     assert len(json.dumps([t.model_dump(mode="json", by_alias=True, exclude_none=True) for t in tools])) <= 8000  # S1
 
 
@@ -253,3 +259,46 @@ async def test_a_result_id_does_not_work_in_another_scope():
         async with mcp(base, "homelab") as client:
             other = await client.call_tool("more", {"result_id": rid, "offset": 1000})
     assert other.is_error and "expired" in text(other)
+
+
+@pytest.mark.anyio
+async def test_an_approved_write_finishes_and_is_audited_even_if_the_client_gives_up(caplog):
+    caplog.set_level("INFO", logger="switchboard.audit")
+    async with switchboard() as (base, telegram, writes):
+        async with mcp(base, "homelab") as client:
+            with anyio.move_on_after(0.2):  # the client gives up while the approved write runs
+                await client.call_tool("write", {"tool": "notes_slow_add", "args": {"text": "x"}, "reason": "r"})
+        with anyio.fail_after(5):
+            while not writes or not any("approved — ok" in e for e in telegram.edits):
+                await anyio.sleep(0.05)
+    assert writes == ["x"]
+    lines = [json.loads(r.getMessage()) for r in caplog.records if r.name == "switchboard.audit"]
+    assert [line["outcome"] for line in lines] == ["running", "ok"]
+    assert lines[0]["approval_id"] == lines[1]["approval_id"]
+
+
+@pytest.mark.anyio
+async def test_a_bad_query_is_refused_before_asking():
+    async with switchboard() as (base, telegram, writes), mcp(base, "homelab") as client:
+        args = {"tool": "notes_add", "args": {"text": "x"}, "reason": "r", "query": "[[["}
+        result = await client.call_tool("write", args)
+    assert result.is_error and "bad query" in text(result) and "nothing was executed" in text(result)
+    assert telegram.sent == [] and writes == []
+
+
+@pytest.mark.anyio
+async def test_a_query_that_cannot_apply_after_the_write_still_reports_the_write():
+    async with switchboard() as (base, _, writes), mcp(base, "homelab") as client:
+        args = {"tool": "notes_add", "args": {"text": "x"}, "reason": "r", "query": "id"}
+        result = await client.call_tool("write", args)
+    assert not result.is_error and writes == ["x"]
+    assert "the write ran" in text(result) and "added" in " ".join(c.text for c in result.content)
+
+
+@pytest.mark.anyio
+async def test_a_write_too_large_to_show_is_refused_before_anything_runs():
+    big = {f"k{i}": "v" * 150 for i in range(40)}
+    async with switchboard() as (base, telegram, writes), mcp(base, "homelab") as client:
+        result = await client.call_tool("write", {"tool": "notes_add", "args": big, "reason": "r"})
+    assert result.is_error and "too large to show" in text(result)
+    assert telegram.sent == [] and writes == []

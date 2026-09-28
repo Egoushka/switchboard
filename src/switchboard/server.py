@@ -12,6 +12,8 @@ import time
 from typing import Any
 
 import anyio
+import jmespath
+import jmespath.exceptions
 import mcp_types as types
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -34,6 +36,8 @@ INSTRUCTIONS = (
     "then call it with read (no side effects) or write (waits for Yehor to approve it on his phone). "
     "Narrow big JSON results with query (JMESPath); page the rest with more."
 )
+# An approved write runs shielded from the client going away, but never longer than this.
+WRITE_TIMEOUT_S = 300
 READ_ONLY = types.ToolAnnotations(read_only_hint=True, open_world_hint=True)
 WRITE = types.ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=True)
 
@@ -129,6 +133,11 @@ class ScopeTools:
         if self.approver is None or not self.scope.writes:
             raise Refusal("this scope is read-only")
         t = await self.lookup(tool)
+        if query:  # a query that cannot work must fail before Yehor is asked, not after the write ran
+            try:
+                jmespath.compile(query)
+            except jmespath.exceptions.JMESPathError as e:
+                raise Refusal(f"bad query: {e}; nothing was executed") from None
         args = args or {}
         client = (ctx.headers or {}).get("x-switchboard-client") or self.scope.name
         started = time.monotonic()
@@ -149,26 +158,44 @@ class ScopeTools:
                 scope=self.scope.name, client=client, tool=t.name, args=args, reason=reason,
                 destructive=t.destructive, timeout_s=self.scope.approval_timeout_s, on_wait=progress,
             )
-        except ApprovalUnavailable:
+        except ApprovalUnavailable as e:
             self._audit(record, "unavailable", "-", started)
-            raise Refusal("approval unavailable; nothing was executed") from None
+            raise Refusal(f"approval unavailable ({e}); nothing was executed") from None
+        record["approval_id"] = req.id
         metrics.approvals.labels(self.scope.name, req.decision).inc()
         metrics.approval_wait.observe(time.monotonic() - started)
         if req.decision != "approved":
             self._audit(record, req.decision, "-", started)
             hint = " — ask Yehor to approve, then call write again" if req.decision == "expired" else ""
             raise Refusal(f"{req.decision}; nothing was executed{hint}")
-        try:
-            result = await self.upstream.call_tool(t.name, req.args, retry=False)
-        except UpstreamError:
-            await self.approver.report(req, "✅ approved — result unknown: the upstream connection failed")
-            self._audit(record, "approved", "unknown", started)
-            raise
-        outcome = "error" if result.is_error else "ok"
-        await self.approver.report(req, f"✅ approved — {'upstream error' if result.is_error else 'ok'}")
-        self._audit(record, "approved", outcome, started)
+
+        # Approved. The decision is on record before the upstream call (so it survives a kill), and the
+        # call is shielded: a client giving up must not cut an approved write half-way.
+        self._audit(record, "approved", "running", started)
+        result: types.CallToolResult | None = None
+        failure = "the upstream did not answer"
+        with anyio.CancelScope(shield=True):
+            try:
+                with anyio.fail_after(WRITE_TIMEOUT_S):
+                    result = await self.upstream.call_tool(t.name, req.args, retry=False)
+            except UpstreamError as e:
+                failure = str(e)
+            except TimeoutError:
+                failure = f"the upstream did not answer in {WRITE_TIMEOUT_S} s"
+            outcome = "unknown" if result is None else ("error" if result.is_error else "ok")
+            self._audit(record, "approved", outcome, started)
+            with anyio.move_on_after(15):
+                shown = {"ok": "ok", "error": "upstream error", "unknown": f"result unknown: {failure}"}[outcome]
+                await self.approver.report(req, f"✅ approved — {shown}")
+        if result is None:
+            raise Refusal(f"approved, but the result is unknown: {failure}; the write may or may not have happened")
         metrics.calls.labels(self.scope.name, t.server, "write", outcome).inc()
-        return self.shape(t, result, query, max_chars)
+        try:
+            return self.shape(t, result, query, max_chars)
+        except QueryError as e:  # the write ran: say so, instead of an error the model would retry
+            shaped = self.shape(t, result, "", max_chars)
+            note = types.TextContent(type="text", text=f"[the write ran; query not applied: {e}]")
+            return types.CallToolResult(content=[note, *shaped.content], is_error=shaped.is_error)
 
     def _audit(self, record: dict[str, Any], decision: str, outcome: str, started: float) -> None:
         line = {
