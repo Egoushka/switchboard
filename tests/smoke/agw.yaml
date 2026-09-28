@@ -1,0 +1,37 @@
+config:
+  adminAddr: "off"
+binds:
+- port: 3000
+  listeners:
+  - routes:
+    - name: homelab
+      matches: [{path: {exact: /mcp/homelab}}]
+      policies:
+        apiKey:
+          mode: strict
+          keys: [{keyHash: "sha256:7aad2d3355532f8d0c97fc664669f6db04e1f2c7ee8116987309d36489268354", metadata: {client: switchboard}}]
+      backends:
+      - mcp:
+          prefixMode: always
+          failureMode: failOpen
+          targets:
+          - name: oura
+            mcp: {host: "http://upstream:8000/mcp"}
+    - name: lab-ro
+      matches: [{path: {exact: /mcp/lab-ro}}]
+      policies:
+        apiKey:
+          mode: strict
+          keys: [{keyHash: "sha256:752f092d5fdd3f0886bb57e2ccf9b3e174c01565649e3d50f15f1a0d90855fac", metadata: {client: smoke}}]
+        transformations:
+          request:
+            set:
+              x-switchboard-client: apiKey.client
+      backends:
+      - mcp:
+          prefixMode: always
+          failureMode: failOpen
+          targets:
+          - name: lab
+            mcp: {host: "http://switchboard:8000/mcp/homelab-ro"}
+            policies: {backendAuth: {key: "${SWITCHBOARD_TOKEN}"}}

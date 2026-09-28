@@ -1,0 +1,6 @@
+upstream: http://agentgateway:3000
+ingress_token_env: SWITCHBOARD_TOKEN
+scopes:
+  homelab-ro: {upstream_route: /mcp/homelab, key_env: AGW_KEY_HOMELAB_SWITCHBOARD, writes: "off"}
+servers:
+  oura: {about: "Oura ring — sleep", trust_annotations: true}

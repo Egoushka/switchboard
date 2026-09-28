@@ -1,0 +1,19 @@
+services:
+  upstream:
+    image: switchboard:dev
+    entrypoint: ["python", "/smoke/upstream.py"]
+    volumes: ["./:/smoke:ro"]
+  agentgateway:
+    image: cr.agentgateway.dev/agentgateway:v1.5.0@sha256:bf2f339ef326d32def2aaeb44b1b4549801293c19b89e764a4228667d97d9896
+    command: ["-f", "/smoke/agw.yaml"]
+    environment: [SWITCHBOARD_TOKEN=smoke-token]
+    volumes: ["./:/smoke:ro"]
+    ports: ["127.0.0.1:13000:3000"]
+  switchboard:
+    image: switchboard:dev
+    environment:
+      - SWITCHBOARD_CONFIG=/smoke/switchboard.yaml
+      - SWITCHBOARD_TOKEN=smoke-token
+      - AGW_KEY_HOMELAB_SWITCHBOARD=smoke-upstream-key
+    volumes: ["./:/smoke:ro"]
+    depends_on: [agentgateway, upstream]
