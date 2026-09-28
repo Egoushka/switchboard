@@ -23,6 +23,10 @@ from switchboard.config import Server
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
+# What the SDK raises when the session itself is gone: a torn-down connection (-32000), or a
+# session id the server no longer knows (-32600, "Session not found" after an agentgateway
+# restart). Any other code is the server's answer, and the session is fine.
+SESSION_LOST = frozenset({types.CONNECTION_CLOSED, types.INVALID_REQUEST})
 Connect = Callable[[], AbstractAsyncContextManager[Client]]
 
 
@@ -83,7 +87,10 @@ class Upstream:
             assert self._client is not None
             return self._client
 
-    def _drop(self) -> None:
+    def _drop(self, client: Client) -> None:
+        """Stop the session that failed, never a newer one another request has already opened."""
+        if self._client is not client:
+            return
         if self._stop is not None:
             self._stop.set()
         self._client = self._stop = None
@@ -93,13 +100,16 @@ class Upstream:
             client = await self._session()
             try:
                 return await op(client)
-            except MCPError as e:  # the server answered with an error: the session is fine
-                raise UpstreamError(f"{self.label}: {e.message}") from None
-            except Exception as e:
-                self._drop()
-                metrics.upstream_errors.labels(self.label).inc()
-                if not retry or attempt == 2:
-                    raise UpstreamError(f"upstream {self.label} unavailable") from e
+            except MCPError as e:
+                if e.code not in SESSION_LOST:  # the server answered with an error: the session is fine
+                    raise UpstreamError(f"{self.label}: {e.message}") from None
+                failure: Exception = e
+            except Exception as e:  # noqa: BLE001 - any transport failure ends this session
+                failure = e
+            self._drop(client)
+            metrics.upstream_errors.labels(self.label).inc()
+            if not retry or attempt == 2:
+                raise UpstreamError(f"upstream {self.label} unavailable") from failure
         raise AssertionError("unreachable")
 
     async def list_tools(self) -> list[types.Tool]:
