@@ -201,3 +201,44 @@ async def test_out_of_range_numbers_are_clamped():
     assert tiny.startswith("x\n…[truncated: 1 of 20000")
     assert again.startswith("x\n…[truncated: 1 of 20000")
     assert len(many.splitlines()) <= 20
+
+
+@pytest.mark.anyio
+async def test_writable_scope_adds_write():
+    async with switchboard() as (base, _, _), mcp(base, "homelab") as client:
+        tools = (await client.list_tools()).tools
+    assert [t.name for t in tools] == ["search", "describe", "read", "write", "more"]
+    write = next(t for t in tools if t.name == "write")
+    assert write.annotations.read_only_hint is False and write.annotations.destructive_hint is True
+
+
+@pytest.mark.anyio
+async def test_write_runs_once_after_approval_and_is_audited(caplog):
+    caplog.set_level("INFO", logger="switchboard.audit")
+    async with switchboard() as (base, telegram, writes), mcp(base, "homelab", client_name="claude-desktop") as client:
+        result = await client.call_tool("write", {"tool": "notes_add", "args": {"text": "buy milk"}, "reason": "Yehor asked"})
+    assert not result.is_error and text(result) == "added"
+    assert writes == ["buy milk"]
+    assert "notes_add" in telegram.sent[0] and "claude-desktop" in telegram.sent[0] and "Yehor asked" in telegram.sent[0]
+    assert "approved — ok" in telegram.edits[-1]
+    lines = [json.loads(r.getMessage()) for r in caplog.records if r.name == "switchboard.audit"]
+    assert lines[-1]["decision"] == "approved" and lines[-1]["outcome"] == "ok" and lines[-1]["client"] == "claude-desktop"
+    assert "buy milk" not in json.dumps(lines) and len(lines[-1]["args_sha256"]) == 64
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("policy", "decision"), [("deny", "denied"), ("ignore", "expired")])
+async def test_write_denied_or_expired_runs_nothing(policy, decision):
+    async with switchboard() as (base, telegram, writes):
+        telegram.policy = policy
+        async with mcp(base, "homelab") as client:
+            result = await client.call_tool("write", {"tool": "notes_add", "args": {"text": "x"}, "reason": "r"})
+    assert result.is_error and text(result).startswith(f"{decision}; nothing was executed")
+    assert writes == []
+
+
+@pytest.mark.anyio
+async def test_write_is_not_offered_on_a_read_only_scope():
+    async with switchboard() as (base, _, writes), mcp(base, "homelab-ro") as client:
+        result = await client.call_tool("write", {"tool": "notes_add", "args": {"text": "x"}, "reason": "r"})
+    assert result.is_error and writes == []

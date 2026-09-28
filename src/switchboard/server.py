@@ -4,21 +4,23 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import hashlib
 import hmac
 import json
 import logging
+import time
 from typing import Any
 
 import anyio
 import mcp_types as types
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
 from switchboard import metrics
-from switchboard.approval import Approver
+from switchboard.approval import ApprovalUnavailable, Approver
 from switchboard.catalog import ToolInfo, compact_schema, render_catalog
 from switchboard.config import Config, Scope
 from switchboard.shaping import QueryError, ResultCache, render, upstream_chars, window
@@ -115,6 +117,69 @@ class ScopeTools:
         metrics.calls.labels(self.scope.name, t.server, "read", "error" if result.is_error else "ok").inc()
         return self.shape(t, result, query, max_chars)
 
+    async def write(
+        self,
+        tool: str,
+        reason: str,
+        ctx: Context,
+        args: dict[str, Any] | None = None,
+        query: str = "",
+        max_chars: int | None = None,
+    ) -> types.CallToolResult:
+        if self.approver is None or not self.scope.writes:
+            raise Refusal("this scope is read-only")
+        t = await self.lookup(tool)
+        args = args or {}
+        client = (ctx.headers or {}).get("x-switchboard-client") or self.scope.name
+        started = time.monotonic()
+        record = {
+            "event": "write",
+            "scope": self.scope.name,
+            "client": client,
+            "tool": t.name,
+            "args_sha256": hashlib.sha256(json.dumps(args, sort_keys=True, ensure_ascii=False).encode()).hexdigest(),
+            "reason": reason[:200],
+        }
+
+        async def progress() -> None:
+            await ctx.report_progress(time.monotonic() - started, self.scope.approval_timeout_s, "waiting for Yehor's approval")
+
+        try:
+            req = await self.approver.ask(
+                scope=self.scope.name, client=client, tool=t.name, args=args, reason=reason,
+                destructive=t.destructive, timeout_s=self.scope.approval_timeout_s, on_wait=progress,
+            )
+        except ApprovalUnavailable:
+            self._audit(record, "unavailable", "-", started)
+            raise Refusal("approval unavailable; nothing was executed") from None
+        metrics.approvals.labels(self.scope.name, req.decision).inc()
+        metrics.approval_wait.observe(time.monotonic() - started)
+        if req.decision != "approved":
+            self._audit(record, req.decision, "-", started)
+            hint = " — ask Yehor to approve, then call write again" if req.decision == "expired" else ""
+            raise Refusal(f"{req.decision}; nothing was executed{hint}")
+        try:
+            result = await self.upstream.call_tool(t.name, req.args, retry=False)
+        except UpstreamError:
+            await self.approver.report(req, "✅ approved — result unknown: the upstream connection failed")
+            self._audit(record, "approved", "unknown", started)
+            raise
+        outcome = "error" if result.is_error else "ok"
+        await self.approver.report(req, f"✅ approved — {'upstream error' if result.is_error else 'ok'}")
+        self._audit(record, "approved", outcome, started)
+        metrics.calls.labels(self.scope.name, t.server, "write", outcome).inc()
+        return self.shape(t, result, query, max_chars)
+
+    def _audit(self, record: dict[str, Any], decision: str, outcome: str, started: float) -> None:
+        line = {
+            **record,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "decision": decision,
+            "wait_ms": int((time.monotonic() - started) * 1000),
+            "outcome": outcome,
+        }
+        audit.info(json.dumps(line, ensure_ascii=False))
+
     async def more(self, result_id: str, offset: int) -> types.CallToolResult:
         cached = self.results.get(result_id)
         if cached is None:
@@ -148,7 +213,7 @@ def register(server: MCPServer, tools: ScopeTools, catalog: str) -> None:
     server.add_tool(guarded(tools.search), name="search", description=d["search"], annotations=READ_ONLY)
     server.add_tool(guarded(tools.describe), name="describe", description=d["describe"], annotations=READ_ONLY)
     server.add_tool(guarded(tools.read), name="read", description=d["read"], annotations=READ_ONLY)
-    if tools.scope.writes and tools.approver is not None and hasattr(tools, "write"):
+    if tools.scope.writes and tools.approver is not None:
         server.add_tool(guarded(tools.write), name="write", description=d["write"], annotations=WRITE)
     server.add_tool(guarded(tools.more), name="more", description=d["more"], annotations=READ_ONLY)
 
