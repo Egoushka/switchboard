@@ -6,6 +6,7 @@ import copy
 import html
 import json
 import logging
+import re
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -20,6 +21,10 @@ logging.getLogger("httpx2").setLevel(logging.WARNING)
 
 
 class ApprovalUnavailable(Exception):
+    pass
+
+
+class TooLargeToShow(ApprovalUnavailable):
     pass
 
 
@@ -77,15 +82,43 @@ class Request:
     settled: anyio.Event = field(default_factory=anyio.Event)
 
 
+VALUE_CAP = 200  # chars shown per string value
+ARGS_CAP = 2500  # rendered arguments; above it the write is refused, never cut
+# Zero-width and bidi controls could hide or visually reorder what Yehor approves.
+_INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
+
+
+def _visible(text: str) -> str:
+    return _INVISIBLE.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
+
+
+def _capped(value: Any) -> Any:
+    """Every key and every short value always shows: long strings are cut one by one, never the whole."""
+    if isinstance(value, str):
+        return value if len(value) <= VALUE_CAP else f"{value[:VALUE_CAP]}…(+{len(value) - VALUE_CAP})"
+    if isinstance(value, dict):
+        return {str(k)[:100]: _capped(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_capped(v) for v in value]
+    return value
+
+
 def render(req: Request) -> str:
-    args = json.dumps(req.args, ensure_ascii=False, indent=1)
-    if len(args) > 1500:
-        args = args[:1500] + "…"
+    args = _visible(json.dumps(_capped(req.args), ensure_ascii=False, indent=1))
+    if len(args) > ARGS_CAP:
+        raise TooLargeToShow(
+            f"the arguments are too large to show on the phone ({len(args)} chars even with each value capped "
+            f"at {VALUE_CAP}); split the write into smaller ones"
+        )
     flag = " 🔴 destructive" if req.destructive else ""
+
+    def shown(text: str) -> str:
+        return html.escape(_visible(text))
+
     return (
-        f"<b>Write request</b> · {html.escape(req.scope)} · {html.escape(req.client)}\n"
-        f"<b>{html.escape(req.tool)}</b>{flag}\n"
-        f"<i>{html.escape(req.reason[:500])}</i>\n"
+        f"<b>Write request</b> · {shown(req.scope)} · {shown(req.client)}\n"
+        f"<b>{shown(req.tool)}</b>{flag}\n"
+        f"<i>{shown(req.reason[:500])}</i>\n"
         f"<pre>{html.escape(args)}</pre>"
     )
 
@@ -121,10 +154,11 @@ class Approver:
             id=secrets.token_urlsafe(12), scope=scope, client=client, tool=tool,
             args=copy.deepcopy(args), reason=reason, destructive=destructive,
         )
+        text = render(req)  # raises TooLargeToShow before anything is pending or sent
         self._pending[req.id] = req
         try:
             req.message_id = await self._api.send(
-                self._me, render(req), [("Approve", f"a:{req.id}"), ("Deny", f"d:{req.id}")]
+                self._me, text, [("Approve", f"a:{req.id}"), ("Deny", f"d:{req.id}")]
             )
         except Exception as e:  # noqa: BLE001 - any send failure must fail closed
             self._pending.pop(req.id, None)

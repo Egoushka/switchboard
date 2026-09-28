@@ -5,7 +5,7 @@ import anyio
 import httpx2
 import pytest
 
-from switchboard.approval import ApprovalUnavailable, Approver, BotAPI, Request, render
+from switchboard.approval import ApprovalUnavailable, Approver, BotAPI, Request, TooLargeToShow, render
 
 ME = 42
 
@@ -158,3 +158,32 @@ async def test_bot_api_errors_and_logs_never_contain_the_token(caplog):
         await bad.send(ME, "hi", [("Approve", "a:x")])
     assert token not in str(raised.value) and raised.value.__cause__ is None
     assert all(token not in r.getMessage() for r in caplog.records)
+
+
+def request(args, tool="telegram_send_message", reason="r"):
+    return Request(id="x", scope="homelab", client="laptop", tool=tool, args=args, reason=reason, destructive=False)
+
+
+def test_a_long_value_cannot_hide_the_arguments_after_it():
+    text = render(request({"message": "x" * 1600, "chat_id": "@stranger"}))
+    assert "&quot;chat_id&quot;: &quot;@stranger&quot;" in text and "…(+1400)" in text
+
+
+def test_invisible_and_bidi_characters_are_shown_as_escapes():
+    text = render(request({"to": "ok\u202egnp.exe"}, tool="notes\u200b_add", reason="fine\u2066"))
+    assert "\u202e" not in text and "\u200b" not in text and "\u2066" not in text
+    assert "\\u202e" in text and "\\u200b" in text and "\\u2066" in text
+
+
+def test_arguments_too_large_to_show_are_refused():
+    with pytest.raises(TooLargeToShow, match="too large to show"):
+        render(request({f"k{i}": "v" * 150 for i in range(40)}))
+
+
+@pytest.mark.anyio
+async def test_a_write_too_large_to_show_is_never_sent():
+    fake = FakeTelegram()
+    approver = Approver(fake, ME)
+    with pytest.raises(ApprovalUnavailable, match="too large to show"):
+        await ask(approver, [], args={f"k{i}": "v" * 150 for i in range(40)})
+    assert fake.sent == [] and approver._pending == {}
