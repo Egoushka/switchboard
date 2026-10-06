@@ -3,6 +3,11 @@ services:
     image: switchboard:dev
     entrypoint: ["python", "/smoke/upstream.py"]
     volumes: ["./:/smoke:ro"]
+  telegram:
+    image: switchboard:dev
+    entrypoint: ["python", "/smoke/telegram.py"]
+    volumes: ["./:/smoke:ro"]
+    ports: ["127.0.0.1:18081:8081"]
   agentgateway:
     image: cr.agentgateway.dev/agentgateway:v1.5.0@sha256:bf2f339ef326d32def2aaeb44b1b4549801293c19b89e764a4228667d97d9896
     command: ["-f", "/smoke/agw.yaml"]
@@ -15,5 +20,8 @@ services:
       - SWITCHBOARD_CONFIG=/smoke/switchboard.yaml
       - SWITCHBOARD_TOKEN=smoke-token
       - AGW_KEY_HOMELAB_SWITCHBOARD=smoke-upstream-key
+      - SMOKE_TELEGRAM_TOKEN=smoke-bot-token
+      - SMOKE_APPROVER_ID=4242
+      - SWITCHBOARD_TELEGRAM_API=http://telegram:8081
     volumes: ["./:/smoke:ro"]
-    depends_on: [agentgateway, upstream]
+    depends_on: [agentgateway, upstream, telegram]
