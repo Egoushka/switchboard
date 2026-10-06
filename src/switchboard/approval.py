@@ -38,12 +38,12 @@ class Telegram(Protocol):
 class BotAPI:
     """The four Bot API calls switchboard needs. Errors never carry the URL: it contains the token."""
 
-    def __init__(self, token: str, http: httpx2.AsyncClient):
-        self._base, self._http = f"https://api.telegram.org/bot{token}/", http
+    def __init__(self, token: str, http: httpx2.AsyncClient, api: str = "https://api.telegram.org"):
+        self._base, self._http = f"{api.rstrip('/')}/bot{token}/", http
 
-    async def _call(self, method: str, timeout: float = 15, **params: Any) -> Any:
+    async def _call(self, method: str, http_timeout: float = 15, **params: Any) -> Any:
         try:
-            response = await self._http.post(self._base + method, json=params, timeout=timeout)
+            response = await self._http.post(self._base + method, json=params, timeout=http_timeout)
             body = response.json()
         except (httpx2.HTTPError, ValueError) as e:
             raise ApprovalUnavailable(f"telegram {method}: {type(e).__name__}") from None

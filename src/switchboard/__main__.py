@@ -27,7 +27,8 @@ def main() -> None:
     }
     approver = None
     if cfg.approval is not None:
-        approver = Approver(BotAPI(cfg.approval.telegram_token, httpx2.AsyncClient()), cfg.approval.approver_id)
+        api = os.environ.get("SWITCHBOARD_TELEGRAM_API", "https://api.telegram.org")  # or a self-hosted Bot API server
+        approver = Approver(BotAPI(cfg.approval.telegram_token, httpx2.AsyncClient(), api), cfg.approval.approver_id)
     prometheus_client.start_http_server(int(os.environ.get("SWITCHBOARD_METRICS_PORT", "9109")))
     uvicorn.run(
         build_app(cfg, upstreams, approver),
