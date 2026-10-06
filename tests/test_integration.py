@@ -13,6 +13,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import MCPServer
 from mcp.shared._httpx_utils import create_mcp_http_client
 
+from switchboard import server
 from switchboard.approval import Approver
 from switchboard.config import Approval, Config, Results, Scope, Server
 from switchboard.server import build_app
@@ -102,12 +103,12 @@ def inprocess(server):
 
 
 @asynccontextmanager
-async def switchboard():
+async def switchboard(connect=None, progress_every_s=15):
     upstream_server, writes = fake_upstream()
     telegram = FakeTelegram()
     cfg = config()
-    upstreams = {name: Upstream(name, inprocess(upstream_server)) for name in cfg.scopes}
-    app = build_app(cfg, upstreams, Approver(telegram, 42))
+    upstreams = {name: Upstream(name, connect or inprocess(upstream_server)) for name in cfg.scopes}
+    app = build_app(cfg, upstreams, Approver(telegram, 42, progress_every_s=progress_every_s))
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="on"))
@@ -302,3 +303,170 @@ async def test_a_write_too_large_to_show_is_refused_before_anything_runs():
         result = await client.call_tool("write", {"tool": "notes_add", "args": big, "reason": "r"})
     assert result.is_error and "too large to show" in text(result)
     assert telegram.sent == [] and writes == []
+
+
+class Flaky:
+    """A session that lists tools but fails every call: it raises, or it never answers."""
+
+    def __init__(self, client, mode):
+        self._client, self._mode = client, mode
+
+    async def list_tools(self, **kwargs):
+        return await self._client.list_tools(**kwargs)
+
+    async def call_tool(self, *args, **kwargs):
+        if self._mode == "raise":
+            raise OSError("connection reset")
+        await anyio.sleep_forever()
+
+
+def flaky(mode):
+    upstream_server, _ = fake_upstream()
+
+    @asynccontextmanager
+    async def connect():
+        async with Client(upstream_server) as client:
+            yield Flaky(client, mode)
+
+    return connect
+
+
+def audit_lines(caplog):
+    return [json.loads(r.getMessage()) for r in caplog.records if r.name == "switchboard.audit"]
+
+
+@pytest.mark.anyio
+async def test_a_write_whose_upstream_call_raises_after_approval_reports_the_result_as_unknown(caplog):
+    caplog.set_level("INFO", logger="switchboard.audit")
+    async with switchboard(connect=flaky("raise")) as (base, telegram, writes), mcp(base, "homelab") as client:
+        result = await client.call_tool("write", {"tool": "notes_add", "args": {"text": "x"}, "reason": "r"})
+    assert result.is_error and writes == []
+    assert "result is unknown" in text(result) and "may or may not have happened" in text(result)
+    assert "result unknown: upstream homelab unavailable" in telegram.edits[-1]
+    lines = audit_lines(caplog)
+    assert [line["outcome"] for line in lines] == ["running", "unknown"]
+    assert {line["decision"] for line in lines} == {"approved"}
+
+
+@pytest.mark.anyio
+async def test_a_write_that_outlasts_the_timeout_after_approval_reports_the_result_as_unknown(caplog, monkeypatch):
+    caplog.set_level("INFO", logger="switchboard.audit")
+    monkeypatch.setattr(server, "WRITE_TIMEOUT_S", 0.2)
+    async with switchboard(connect=flaky("hang")) as (base, telegram, _), mcp(base, "homelab") as client:
+        result = await client.call_tool("write", {"tool": "notes_add", "args": {"text": "x"}, "reason": "r"})
+    assert result.is_error and "result is unknown" in text(result) and "did not answer in 0.2 s" in text(result)
+    assert "result unknown: the upstream did not answer in 0.2 s" in telegram.edits[-1]
+    assert [line["outcome"] for line in audit_lines(caplog)] == ["running", "unknown"]
+
+
+@pytest.mark.anyio
+async def test_the_client_gets_progress_notifications_while_waiting_for_a_tap():
+    seen = []
+
+    async def on_progress(progress, total, message):
+        seen.append((progress, total, message))
+
+    async with switchboard(progress_every_s=0.1) as (base, telegram, writes), mcp(base, "homelab") as client:
+        telegram.policy = "ignore"
+        result = await client.call_tool(
+            "write", {"tool": "notes_add", "args": {"text": "x"}, "reason": "r"}, progress_callback=on_progress
+        )
+    assert result.is_error and text(result).startswith("expired") and writes == []
+    assert len(seen) >= 3
+    assert {total for _, total, _ in seen} == {1.0} and {m for _, _, m in seen} == {"waiting for Yehor's approval"}
+    assert [p for p, _, _ in seen] == sorted(p for p, _, _ in seen) and seen[-1][0] > 0.1
+
+
+def refusing(fail_first):  # start-up makes one connect per scope
+    upstream_server, _ = fake_upstream()
+    state = {"connects": 0}
+
+    @asynccontextmanager
+    async def connect():
+        state["connects"] += 1
+        if state["connects"] <= fail_first:
+            raise OSError("connection refused")
+        async with Client(upstream_server) as client:
+            yield client
+
+    return connect
+
+
+@pytest.mark.anyio
+async def test_the_catalog_falls_back_to_config_lines_when_the_gateway_is_down_at_start():
+    async with switchboard(connect=refusing(fail_first=2)) as (base, _, _), mcp(base, "homelab-ro") as client:
+        tools = (await client.list_tools()).tools
+        search = next(t for t in tools if t.name == "search")
+        recovered = text(await client.call_tool("search", {"query": "sleep"}))
+    assert "- notes: Notes" in search.description and "- oura: Oura ring — sleep" in search.description
+    assert "tools)" not in search.description
+    assert recovered.startswith("oura_sleep [read]")  # the gateway came up: calls work, only the lines stay as they were
+
+
+@pytest.mark.anyio
+async def test_the_gateway_stays_down_without_taking_switchboard_down():
+    async with switchboard(connect=refusing(fail_first=10**6)) as (base, _, _), mcp(base, "homelab-ro") as client:
+        result = await client.call_tool("search", {"query": "sleep"})
+        listed = await client.list_tools()
+    assert [t.name for t in listed.tools] == ["search", "describe", "read", "more"]
+    assert result.is_error and "upstream homelab-ro unavailable" in text(result)
+
+
+@pytest.mark.anyio
+async def test_a_gateway_that_never_answers_is_given_up_on_after_the_startup_wait(monkeypatch):
+    @asynccontextmanager
+    async def hangs():
+        await anyio.sleep_forever()
+        yield
+
+    monkeypatch.setattr(server, "STARTUP_WAIT_S", 0.3)
+    started = anyio.current_time()
+    async with switchboard(connect=hangs) as (base, _, _), mcp(base, "homelab-ro") as client:
+        search = next(t for t in (await client.list_tools()).tools if t.name == "search")
+    assert 0.3 <= anyio.current_time() - started < 8
+    assert "- oura: Oura ring — sleep" in search.description and "tools)" not in search.description
+
+
+def sample(name, **labels):
+    from prometheus_client import REGISTRY
+
+    return REGISTRY.get_sample_value(name, labels) or 0.0
+
+
+@pytest.mark.anyio
+async def test_metrics_count_calls_chars_approvals_and_the_catalog():
+    def now():
+        return {
+            "read_ok": sample("switchboard_calls_total", scope="homelab", server="oura", verb="read", outcome="ok"),
+            "read_error": sample("switchboard_calls_total", scope="homelab", server="oura", verb="read", outcome="error"),
+            "write_ok": sample("switchboard_calls_total", scope="homelab", server="notes", verb="write", outcome="ok"),
+            "upstream": sample("switchboard_result_chars_total", scope="homelab", server="oura", stage="upstream"),
+            "returned": sample("switchboard_result_chars_total", scope="homelab", server="oura", stage="returned"),
+            "approved": sample("switchboard_approvals_total", scope="homelab", decision="approved"),
+            "denied": sample("switchboard_approvals_total", scope="homelab", decision="denied"),
+            "waits": sample("switchboard_approval_wait_seconds_count"),
+        }
+
+    before = now()
+    async with switchboard() as (base, telegram, _), mcp(base, "homelab") as client:
+        await client.call_tool("read", {"tool": "oura_sleep"})
+        await client.call_tool("read", {"tool": "oura_fail"})
+        await client.call_tool("read", {"tool": "oura_big", "max_chars": 1000})
+        await client.call_tool("write", {"tool": "notes_add", "args": {"text": "x"}, "reason": "r"})
+        telegram.policy = "deny"
+        await client.call_tool("write", {"tool": "notes_add", "args": {"text": "y"}, "reason": "r"})
+    after = now()
+    delta = {k: after[k] - before[k] for k in before}
+    assert delta["read_ok"] == 2 and delta["read_error"] == 1  # oura_big is a successful read
+    assert delta["write_ok"] == 1 and delta["approved"] == 1 and delta["denied"] == 1 and delta["waits"] == 2
+    assert delta["upstream"] > 20_000 and 0 < delta["returned"] < delta["upstream"]
+    assert sample("switchboard_catalog_tools", scope="homelab") == 5
+
+
+@pytest.mark.anyio
+async def test_metrics_count_upstream_failures():
+    labels = {"scope": "homelab-ro"}
+    before = sample("switchboard_upstream_errors_total", **labels)
+    async with switchboard(connect=refusing(fail_first=10**6)) as (base, _, _), mcp(base, "homelab-ro") as client:
+        await client.call_tool("search", {"query": "sleep"})
+    assert sample("switchboard_upstream_errors_total", **labels) > before

@@ -5,6 +5,19 @@ on:
     tags: ["v*"]
   pull_request:
 jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: docker build -t switchboard:dev .
+      - run: docker compose -f tests/smoke/compose.yaml up -d
+      - run: uv run python tests/smoke/check.py
+      - if: failure()
+        run: docker compose -f tests/smoke/compose.yaml logs
+      - if: always()
+        run: docker compose -f tests/smoke/compose.yaml down -v
   ci:
     runs-on: ubuntu-latest
     permissions: {contents: read, packages: write}

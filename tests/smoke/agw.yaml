@@ -35,3 +35,21 @@ binds:
           - name: lab
             mcp: {host: "http://switchboard:8000/mcp/homelab-ro"}
             policies: {backendAuth: {key: "${SWITCHBOARD_TOKEN}"}}
+    - name: lab-rw
+      matches: [{path: {exact: /mcp/lab-rw}}]
+      policies:
+        apiKey:
+          mode: strict
+          keys: [{keyHash: "sha256:e0521cba8e3ee3fe80469a14fd5b9331baace17d6fced56a76203304cb6f0a0d", metadata: {client: smoke-writer}}]
+        transformations:
+          request:
+            set:
+              x-switchboard-client: apiKey.client
+      backends:
+      - mcp:
+          prefixMode: always
+          failureMode: failOpen
+          targets:
+          - name: lab
+            mcp: {host: "http://switchboard:8000/mcp/homelab-rw"}
+            policies: {backendAuth: {key: "${SWITCHBOARD_TOKEN}"}}

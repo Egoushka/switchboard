@@ -38,6 +38,8 @@ INSTRUCTIONS = (
 )
 # An approved write runs shielded from the client going away, but never longer than this.
 WRITE_TIMEOUT_S = 300
+# How long start-up waits for the gateway's tool list before it falls back to the config's catalog lines.
+STARTUP_WAIT_S = 20
 READ_ONLY = types.ToolAnnotations(read_only_hint=True, open_world_hint=True)
 WRITE = types.ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=True)
 
@@ -283,7 +285,7 @@ def build_app(cfg: Config, upstreams: dict[str, Upstream], approver: Approver | 
                 tg.start_soon(approver.poll_forever)
             for name, scope in cfg.scopes.items():
                 counts = None
-                with anyio.move_on_after(20):  # agentgateway may still be starting: fall back to config lines
+                with anyio.move_on_after(STARTUP_WAIT_S):  # agentgateway may still be starting
                     counts = await caches[name].counts()
                 tools = ScopeTools(cfg, scope, caches[name], upstreams[name], results, approver)
                 register(mcp_servers[name], tools, render_catalog(counts, cfg.servers))

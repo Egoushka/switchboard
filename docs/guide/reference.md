@@ -99,10 +99,11 @@ A YAML file, read once at start from the path in `SWITCHBOARD_CONFIG` (`load` in
 | `SWITCHBOARD_CONFIG` | `/config/config.yaml` | the entrypoint: the config file's path |
 | `SWITCHBOARD_PORT` | `8000` | the entrypoint: MCP and `/healthz` |
 | `SWITCHBOARD_METRICS_PORT` | `9109` | the entrypoint: Prometheus |
+| `SWITCHBOARD_TELEGRAM_API` | `https://api.telegram.org` | the entrypoint: the Bot API server for approvals |
 | each name in a `*_env` key | none | the config: the secret it names |
 | `MCP_KEY` | none | [measure.py](../../scripts/measure.py): the route's bearer |
 
-The first three are read in [`__main__.py`](../../src/switchboard/__main__.py).
+The first four are read in [`__main__.py`](../../src/switchboard/__main__.py).
 
 ## Routes and ports
 

@@ -1,4 +1,5 @@
 import functools
+import json
 import logging
 
 import anyio
@@ -187,3 +188,30 @@ async def test_a_write_too_large_to_show_is_never_sent():
     with pytest.raises(ApprovalUnavailable, match="too large to show"):
         await ask(approver, [], args={f"k{i}": "v" * 150 for i in range(40)})
     assert fake.sent == [] and approver._pending == {}
+
+
+@pytest.mark.anyio
+async def test_bot_api_posts_to_the_configured_server_and_defaults_to_telegram():
+    urls = []
+
+    def ok(request):
+        urls.append(str(request.url))
+        return httpx2.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(ok))
+    await BotAPI("tok", client).send(ME, "hi", [("Approve", "a:x")])
+    await BotAPI("tok", client, api="http://bot-api:8081/").send(ME, "hi", [("Approve", "a:x")])
+    assert urls == ["https://api.telegram.org/bottok/sendMessage", "http://bot-api:8081/bottok/sendMessage"]
+
+
+@pytest.mark.anyio
+async def test_bot_api_long_polls_with_the_offset_and_the_poll_timeout():
+    bodies = []
+
+    def ok(request):
+        bodies.append(json.loads(request.content))
+        return httpx2.Response(200, json={"ok": True, "result": [{"update_id": 7}]})
+
+    api = BotAPI("tok", httpx2.AsyncClient(transport=httpx2.MockTransport(ok)))
+    assert await api.updates(7, 50) == [{"update_id": 7}]
+    assert bodies == [{"offset": 7, "timeout": 50, "allowed_updates": ["callback_query"]}]

@@ -57,9 +57,10 @@ To check the result, call `search` with `{"server": "<target>", "limit": 20}`. E
 | `SWITCHBOARD_CONFIG` | `/config/config.yaml` | the config file's path |
 | `SWITCHBOARD_PORT` | `8000` | the port for MCP and `/healthz` |
 | `SWITCHBOARD_METRICS_PORT` | `9109` | the Prometheus port |
+| `SWITCHBOARD_TELEGRAM_API` | `https://api.telegram.org` | the Bot API server for approvals; set it only for a self-hosted one |
 | each name in a `*_env` key | none | the secret that key names |
 
-[`__main__.py`](../../src/switchboard/__main__.py) reads the first three.
+[`__main__.py`](../../src/switchboard/__main__.py) reads the first four.
 
 ## Run the container
 
