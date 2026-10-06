@@ -1,6 +1,6 @@
 ---
 title: "Status and evidence"
-description: "What works, what is partial and what does not exist in switchboard v0.1.0, with the test, file or CI step behind each."
+description: "What works, what is partial and what does not exist in switchboard v1.0.0, with the test, file or CI step behind each."
 order: 6
 section: "Project"
 ---
@@ -102,7 +102,7 @@ Nothing in the repository plans these; it has no roadmap.
 
 ## Versions and files
 
-- Version 0.1.0 in [pyproject.toml](../../pyproject.toml) and [`__init__.py`](../../src/switchboard/__init__.py), tagged `v0.1.0`.
+- Version 1.0.0 in [pyproject.toml](../../pyproject.toml) and [`__init__.py`](../../src/switchboard/__init__.py), tagged `v1.0.0`.
 - Python 3.13 or later. The four runtime dependencies are pinned exactly: `mcp` 2.2.0, `jmespath` 1.1.0, `pyyaml` 6.0.3 and `prometheus-client` 0.26.0; [uv.lock](../../uv.lock) pins the rest.
 - The image is `python:3.13-slim` with uv 0.11, runs as user 65534 and exposes ports 8000 and 9109 ([Dockerfile](../../Dockerfile)).
 - The smoke test pins agentgateway v1.5.0 by digest ([compose.yaml](../../tests/smoke/compose.yaml)).
