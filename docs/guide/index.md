@@ -1,6 +1,6 @@
 ---
 title: "Overview"
-description: "What switchboard is, the tools an agent sees through it, which tools may write, what it leaves to the gateway, and where it stands at v0.1.0."
+description: "What switchboard is, the tools an agent sees through it, which tools may write, what it leaves to the gateway, and where it stands at v1.0.0."
 order: 0
 section: "Get started"
 ---
@@ -46,7 +46,7 @@ By default switchboard does not take a tool's word that it only reads. A tool is
 
 ## Current status
 
-- **v0.1.0**, the only tag. This guide describes `main` at that tag ([pyproject.toml](../../pyproject.toml)).
+- **v1.0.0**, the latest tag. This guide describes `main` at that tag ([pyproject.toml](../../pyproject.toml)).
 - **A container image, no package.** CI pushes `ghcr.io/egoushka/switchboard:<version>` for each `v*` tag ([ci.yml](../../.github/workflows/ci.yml)). There is no PyPI package and no GitHub release.
 - **91 tests, all offline.** They stand in for the gateway with an in-process MCP server and for Telegram with a fake. A smoke test runs the image behind a real agentgateway with a fake Telegram, writes included; CI runs it on every push.
 

@@ -70,7 +70,7 @@ The image runs as user 65534 and starts `switchboard` ([Dockerfile](../../Docker
 docker run -d --name switchboard --network <gateway-network> \
   -v "$PWD/config.yaml:/config/config.yaml:ro" \
   -e SWITCHBOARD_TOKEN -e GATEWAY_KEY \
-  ghcr.io/egoushka/switchboard:0.1.0
+  ghcr.io/egoushka/switchboard:1.0.0
 ```
 
 `<gateway-network>` is a Docker network on which the host in `upstream` resolves and the gateway can reach switchboard on port 8000. [compose.yaml](../../tests/smoke/compose.yaml) does the same with Compose.

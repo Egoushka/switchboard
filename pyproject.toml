@@ -1,6 +1,6 @@
 [project]
 name = "switchboard"
-version = "0.1.0"
+version = "1.0.0"
 description = "One MCP front door to every homelab tool: search, describe, read, write (approved on a phone), more."
 readme = "README.md"
 license = "MIT"

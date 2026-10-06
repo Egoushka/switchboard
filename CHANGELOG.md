@@ -4,6 +4,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follo
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-06
+
 ### Added
 
 - `SWITCHBOARD_TELEGRAM_API`: the Bot API server to call, `https://api.telegram.org` by default.
