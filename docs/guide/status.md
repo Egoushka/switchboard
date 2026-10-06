@@ -32,7 +32,7 @@ The 91 tests call no network service outside `127.0.0.1`. They run switchboard i
 | Progress while waiting for a tap | works | [test_integration.py](../../tests/test_integration.py) |
 | Catalog lines when the gateway is down or silent at start | works | [test_integration.py](../../tests/test_integration.py) |
 | Through a real agentgateway, reads and approved or denied writes | works | [tests/smoke](../../tests/smoke/), [ci.yml](../../.github/workflows/ci.yml) |
-| Container image | partial | [Dockerfile](../../Dockerfile), [ci.yml](../../.github/workflows/ci.yml) |
+| Container image, built, smoke-tested and pushed on a tag | works | [Dockerfile](../../Dockerfile), [ci.yml](../../.github/workflows/ci.yml) |
 | A recorded measurement of the tool-list saving | not yet | [measure.py](../../scripts/measure.py) |
 | stdio transport | not yet | [server.py](../../src/switchboard/server.py) |
 | Config reload without a restart | not yet | [`__main__.py`](../../src/switchboard/__main__.py) |
@@ -62,12 +62,13 @@ The 91 tests call no network service outside `127.0.0.1`. They run switchboard i
 - **Progress while waiting for a tap.** `test_the_client_gets_progress_notifications_while_waiting_for_a_tap`: an MCP client's progress callback receives at least three notifications with a total of 1.0 (the scope's timeout), the message `waiting for Yehor's approval` and rising progress.
 - **Catalog lines when the gateway is down or silent at start.** `test_the_catalog_falls_back_to_config_lines_when_the_gateway_is_down_at_start` (config lines without counts, and calls work once the gateway is back), `test_the_gateway_stays_down_without_taking_switchboard_down`, and `test_a_gateway_that_never_answers_is_given_up_on_after_the_startup_wait`, which sets `STARTUP_WAIT_S` to 0.3 s.
 - **Through a real agentgateway.** [check.py](../../tests/smoke/check.py) runs against the image behind agentgateway v1.5.0, a fake upstream and a fake Telegram: the tool names of both scopes, a search and a read, a refused write on the read-only scope, one approved write that runs once, one denied write that does not run, and the client name the gateway set in the approval messages. CI runs it in the `smoke` job.
+- **Container image.** CI builds it on every run, and the smoke test runs it. The `v1.0.0` tag run pushed `ghcr.io/egoushka/switchboard:1.0.0` ([run 37526827567](https://github.com/Egoushka/switchboard/actions/runs/37526827567)). No test covers the push; that run is its only evidence.
 
 Two limits apply to these rows. The ranking tests use a catalog of four tools; nothing measures search quality on a large one. The 8,000-character bound holds for two servers, and the catalog grows by one line per server.
 
 ## What is partial
 
-- **Container image.** CI builds the image on every run and the smoke test runs it, but the push to ghcr.io on `v*` tags ([ci.yml](../../.github/workflows/ci.yml)) has no test, and this repository records no run of it.
+Nothing is partial.
 
 ## What does not exist
 
