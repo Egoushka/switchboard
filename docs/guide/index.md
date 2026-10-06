@@ -48,7 +48,7 @@ By default switchboard does not take a tool's word that it only reads. A tool is
 
 - **v0.1.0**, the only tag. This guide describes `main` at that tag ([pyproject.toml](../../pyproject.toml)).
 - **A container image, no package.** CI pushes `ghcr.io/egoushka/switchboard:<version>` for each `v*` tag ([ci.yml](../../.github/workflows/ci.yml)). There is no PyPI package and no GitHub release.
-- **75 tests, all offline.** They stand in for the gateway with an in-process MCP server and for Telegram with a fake. A smoke test runs the image behind a real agentgateway; you start it by hand, and CI does not run it.
+- **91 tests, all offline.** They stand in for the gateway with an in-process MCP server and for Telegram with a fake. A smoke test runs the image behind a real agentgateway with a fake Telegram, writes included; CI runs it on every push.
 
 > [!WARNING]
 > The name `switchboard` on PyPI belongs to an unrelated project. `pip install switchboard` does not install this one; use the container image or a clone.

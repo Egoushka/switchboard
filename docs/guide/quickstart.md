@@ -5,7 +5,7 @@ order: 1
 section: "Get started"
 ---
 
-You run the repository's smoke test: switchboard in a container between two agentgateway routes, a fake MCP server behind it, and a script that connects as a client. You need no real MCP server, no Telegram bot and no API key. The stack is read-only, so it does not offer `write`.
+You run the repository's smoke test: switchboard in a container between two agentgateway routes, a fake MCP server behind it, and a script that connects as a client. You need no real MCP server, no Telegram bot and no API key: a fake MCP server and a fake Telegram Bot API stand in. One route is read-only; the other allows writes and a fake approver taps Approve or Deny.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ uv sync
 uv run pytest
 ```
 
-pytest reports `75 passed`. The tests call no network service.
+pytest reports `91 passed`. The tests call no network service outside 127.0.0.1.
 
 ## Start the stack
 
@@ -31,13 +31,14 @@ docker build -t switchboard:dev .
 docker compose -f tests/smoke/compose.yaml up -d
 ```
 
-[compose.yaml](../../tests/smoke/compose.yaml) starts three containers:
+[compose.yaml](../../tests/smoke/compose.yaml) starts four containers:
 
 | service | what it runs | its config |
 |---|---|---|
-| `upstream` | a fake MCP server with one tool, `sleep` | [upstream.py](../../tests/smoke/upstream.py) |
+| `upstream` | a fake MCP server with a read tool `sleep`, a read tool `added` and a write tool `add` | [upstream.py](../../tests/smoke/upstream.py) |
+| `telegram` | a fake Telegram Bot API that taps Approve, or Deny when the request shows `deny-me`, on `127.0.0.1:18081` | [telegram.py](../../tests/smoke/telegram.py) |
 | `agentgateway` | agentgateway, published on `127.0.0.1:13000` | [agw.yaml](../../tests/smoke/agw.yaml) |
-| `switchboard` | the image you built, with one scope, `homelab-ro` | [switchboard.yaml](../../tests/smoke/switchboard.yaml) |
+| `switchboard` | the image you built, with two scopes, `homelab-ro` and `homelab-rw`, and `SWITCHBOARD_TELEGRAM_API` pointing at the fake | [switchboard.yaml](../../tests/smoke/switchboard.yaml) |
 
 ## Call it through the gateway
 
@@ -45,13 +46,21 @@ docker compose -f tests/smoke/compose.yaml up -d
 uv run python tests/smoke/check.py
 ```
 
-It prints `smoke OK`. switchboard starts accepting requests only after it has tried to fetch the gateway's tool list, waiting at most 20 seconds per scope (`lifespan` in [server.py](../../src/switchboard/server.py)). If the check runs before that, run it again.
+It prints `smoke OK`. It waits up to 90 seconds for the stack to answer, because switchboard starts accepting requests only after it has tried to fetch the gateway's tool list, waiting at most 20 seconds per scope (`lifespan` in [server.py](../../src/switchboard/server.py)). CI runs the same check on every push ([ci.yml](../../.github/workflows/ci.yml)).
 
-[check.py](../../tests/smoke/check.py) connects to `http://127.0.0.1:13000/mcp/lab-ro` with the bearer `smoke-client-key` and asserts three things:
+[check.py](../../tests/smoke/check.py) connects to `http://127.0.0.1:13000/mcp/lab-ro` with the bearer `smoke-client-key` and asserts, on the read-only route:
 
 1. `tools/list` returns `lab_search`, `lab_describe`, `lab_read` and `lab_more`.
 2. `lab_search` with `{"query": "sleep"}` returns a first line that starts `oura_sleep [read]`.
 3. `lab_read` with `{"tool": "oura_sleep"}` returns `{"day":"2026-09-27","score":81}`.
+4. `lab_write` is refused.
+
+On `/mcp/lab-rw` with the bearer `smoke-writer-key`, it asserts:
+
+1. `tools/list` also returns `lab_write`.
+2. A `lab_write` of `oura_add` with the text `approve-me` runs once: `oura_added` then returns it.
+3. A `lab_write` with the text `deny-me` returns `denied; nothing was executed`, and `oura_added` still returns one text.
+4. The fake Telegram received two messages, both naming the client `smoke-writer` that the gateway set (not the spoofed header the script sends), and edited them to show `approved — ok` and `denied`.
 
 The fake tool also returns `"contributors": null`. switchboard dropped it.
 
@@ -79,7 +88,7 @@ upstream       tool sleep, behind target oura, named oura_sleep
 - [switchboard.yaml](../../tests/smoke/switchboard.yaml) gives server `oura` `trust_annotations: true`, and the fake tool sets `readOnlyHint`, so `oura_sleep` is a read tool.
 - The `lab-ro` route treats switchboard as one more MCP server, target `lab`. That is why the client sees `lab_search` and not `search`.
 - switchboard accepts the request because the gateway sends `smoke-token`: the value of `SWITCHBOARD_TOKEN`, the variable that `ingress_token_env` names.
-- The `lab-ro` route also sets the `x-switchboard-client` header from the client key's metadata. switchboard puts that name in approval messages and audit lines; this stack has no writes, so nothing uses it here.
+- The `lab-ro` route also sets the `x-switchboard-client` header from the client key's metadata. switchboard puts that name in approval messages and audit lines; on the `lab-rw` route it is `smoke-writer`, and check.py reads it in the fake Telegram's messages.
 
 ## Try other calls
 

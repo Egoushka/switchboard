@@ -7,7 +7,7 @@ section: "Project"
 
 Each row names its evidence. `works` means a test in this repository covers it. `partial` means part of it has no test, or only the hand-run smoke test covers it. `not yet` means it does not exist.
 
-The 75 tests call no network service. They run switchboard in-process or on `127.0.0.1`, with an in-process MCP server standing in for the gateway and a fake standing in for Telegram (`fake_upstream` and `FakeTelegram` in [test_integration.py](../../tests/test_integration.py)). The only run against a real agentgateway is the smoke test in [tests/smoke](../../tests/smoke/), which you start by hand.
+The 91 tests call no network service outside `127.0.0.1`. They run switchboard in-process or on `127.0.0.1`, with an in-process MCP server standing in for the gateway and a fake standing in for Telegram (`fake_upstream` and `FakeTelegram` in [test_integration.py](../../tests/test_integration.py)). The only run against a real agentgateway is the smoke test in [tests/smoke](../../tests/smoke/): CI runs it on every push, and it uses a fake Telegram Bot API over HTTP.
 
 ## Status
 
@@ -25,13 +25,14 @@ The 75 tests call no network service. They run switchboard in-process or on `127
 | Upstream session recovery | works | [test_upstream.py](../../tests/test_upstream.py) |
 | Tool catalog refresh | works | [test_upstream.py](../../tests/test_upstream.py) |
 | Bot token kept out of errors and logs | works | [test_approval.py](../../tests/test_approval.py) |
-| A write whose upstream call fails after approval | partial | [server.py](../../src/switchboard/server.py) |
-| Through a real agentgateway | partial | [tests/smoke](../../tests/smoke/) |
+| Bot API calls: long polling and a configurable server URL | works | [test_approval.py](../../tests/test_approval.py), [test_main.py](../../tests/test_main.py) |
+| A write whose upstream call fails or times out after approval | works | [test_integration.py](../../tests/test_integration.py) |
+| Entrypoint and environment variables | works | [test_main.py](../../tests/test_main.py) |
+| Prometheus metrics | works | [test_integration.py](../../tests/test_integration.py) |
+| Progress while waiting for a tap | works | [test_integration.py](../../tests/test_integration.py) |
+| Catalog lines when the gateway is down or silent at start | works | [test_integration.py](../../tests/test_integration.py) |
+| Through a real agentgateway, reads and approved or denied writes | works | [tests/smoke](../../tests/smoke/), [ci.yml](../../.github/workflows/ci.yml) |
 | Container image | partial | [Dockerfile](../../Dockerfile), [ci.yml](../../.github/workflows/ci.yml) |
-| Entrypoint and environment variables | partial | [`__main__.py`](../../src/switchboard/__main__.py) |
-| Prometheus metrics | partial | [metrics.py](../../src/switchboard/metrics.py) |
-| Progress while waiting for a tap | partial | [test_approval.py](../../tests/test_approval.py) |
-| Catalog lines when the gateway is down at start | partial | [test_upstream.py](../../tests/test_upstream.py), [test_catalog.py](../../tests/test_catalog.py) |
 | A recorded measurement of the tool-list saving | not yet | [measure.py](../../scripts/measure.py) |
 | stdio transport | not yet | [server.py](../../src/switchboard/server.py) |
 | Config reload without a restart | not yet | [`__main__.py`](../../src/switchboard/__main__.py) |
@@ -54,18 +55,19 @@ The 75 tests call no network service. They run switchboard in-process or on `127
 - **Upstream session recovery.** In [test_upstream.py](../../tests/test_upstream.py): `test_lists_and_calls_over_one_session`, `test_a_failed_connect_is_an_upstream_error_and_the_next_call_reconnects`, `test_a_dead_session_is_replaced_for_reads_but_writes_are_not_retried`, `test_json_rpc_error_is_reported_and_keeps_the_session`, `test_a_lost_session_error_reconnects_for_reads` (both codes), `test_a_lost_session_on_a_write_is_dropped_but_not_retried`, `test_a_late_failure_on_an_old_session_does_not_drop_the_new_one`, and `test_reads_recover_after_the_gateway_restarts`, which serves a stand-in gateway over HTTP, restarts it, and reads again.
 - **Tool catalog refresh.** `test_tool_cache_refreshes_after_ttl_and_keeps_the_last_good_catalog` and `test_counts_is_none_when_upstream_never_answered`.
 - **Bot token kept out of errors and logs.** `test_bot_api_errors_and_logs_never_contain_the_token` checks the error text and every log record at DEBUG level.
+- **Bot API calls.** `test_bot_api_long_polls_with_the_offset_and_the_poll_timeout` sends `getUpdates` through the real `BotAPI` against a mock transport. It guards a bug the other tests missed: `getUpdates` raised `TypeError` on every call, because `timeout` was passed twice, so no tap reached switchboard and every write expired. The smoke test found it. `test_bot_api_posts_to_the_configured_server_and_defaults_to_telegram` covers the URL.
+- **A write whose upstream call fails or times out after approval.** `test_a_write_whose_upstream_call_raises_after_approval_reports_the_result_as_unknown` and `test_a_write_that_outlasts_the_timeout_after_approval_reports_the_result_as_unknown` (with `WRITE_TIMEOUT_S` set to 0.2 s): the client gets an error that says the write may or may not have happened, the phone message says `result unknown`, and the audit outcomes are `running` then `unknown`.
+- **Entrypoint and environment variables.** In [test_main.py](../../tests/test_main.py): defaults (config path, ports 8000 and 9109), overrides of all four variables, the HTTP loggers set to WARNING, a bad config stopping `main()` before anything starts, and a real `python -m switchboard` process that answers `/healthz`, refuses an unauthenticated MCP call and serves `/metrics` on the configured ports.
+- **Prometheus metrics.** `test_metrics_count_calls_chars_approvals_and_the_catalog` reads the call, result-character, approval, approval-wait and catalog series after two reads, a failed read, a big read, an approved write and a denied one. `test_metrics_count_upstream_failures` reads the upstream-error series. One gap: a write whose result is unknown adds nothing to `switchboard_calls_total`.
+- **Progress while waiting for a tap.** `test_the_client_gets_progress_notifications_while_waiting_for_a_tap`: an MCP client's progress callback receives at least three notifications with a total of 1.0 (the scope's timeout), the message `waiting for Yehor's approval` and rising progress.
+- **Catalog lines when the gateway is down or silent at start.** `test_the_catalog_falls_back_to_config_lines_when_the_gateway_is_down_at_start` (config lines without counts, and calls work once the gateway is back), `test_the_gateway_stays_down_without_taking_switchboard_down`, and `test_a_gateway_that_never_answers_is_given_up_on_after_the_startup_wait`, which sets `STARTUP_WAIT_S` to 0.3 s.
+- **Through a real agentgateway.** [check.py](../../tests/smoke/check.py) runs against the image behind agentgateway v1.5.0, a fake upstream and a fake Telegram: the tool names of both scopes, a search and a read, a refused write on the read-only scope, one approved write that runs once, one denied write that does not run, and the client name the gateway set in the approval messages. CI runs it in the `smoke` job.
 
 Two limits apply to these rows. The ranking tests use a catalog of four tools; nothing measures search quality on a large one. The 8,000-character bound holds for two servers, and the catalog grows by one line per server.
 
 ## What is partial
 
-- **A write whose upstream call fails after approval.** `write` in [server.py](../../src/switchboard/server.py) reports the result as unknown when the upstream call raises or runs past `WRITE_TIMEOUT_S` (300 seconds). No test drives either path.
-- **Through a real agentgateway.** The smoke test runs the image behind agentgateway v1.5.0 with a fake upstream and asserts the tool names, one search and one read ([check.py](../../tests/smoke/check.py)). It covers a read-only scope with no Telegram, and CI does not run it.
-- **Container image.** CI builds the image on every run and pushes it on `v*` tags ([ci.yml](../../.github/workflows/ci.yml)). Only the smoke test runs it.
-- **Entrypoint and environment variables.** No test runs `main()` in [`__main__.py`](../../src/switchboard/__main__.py): the port variables, the default config path and the log levels are untested. The smoke test starts it with `SWITCHBOARD_CONFIG`.
-- **Prometheus metrics.** [metrics.py](../../src/switchboard/metrics.py) defines six series, and no test reads one.
-- **Progress while waiting for a tap.** `test_progress_is_reported_while_waiting` covers the approver's callback. No test checks the MCP progress notification a client receives.
-- **Catalog lines when the gateway is down at start.** `test_counts_is_none_when_upstream_never_answered` and `test_render_catalog_with_and_without_counts` cover the two halves. No test covers the 20-second wait in `lifespan`.
+- **Container image.** CI builds the image on every run and the smoke test runs it, but the push to ghcr.io on `v*` tags ([ci.yml](../../.github/workflows/ci.yml)) has no test, and this repository records no run of it.
 
 ## What does not exist
 
@@ -81,7 +83,16 @@ Nothing in the repository plans these; it has no roadmap.
 
 ## What CI runs
 
-[ci.yml](../../.github/workflows/ci.yml) runs on pushes to `main`, on `v*` tags and on pull requests:
+[ci.yml](../../.github/workflows/ci.yml) runs on pushes to `main`, on `v*` tags and on pull requests, as two jobs:
+
+`smoke`:
+
+1. `uv sync --frozen`
+2. a build of the image as `switchboard:dev`
+3. `docker compose -f tests/smoke/compose.yaml up -d`
+4. `uv run python tests/smoke/check.py`, then the compose logs on failure and `down -v` always
+
+`ci`:
 
 1. `uv sync --frozen`
 2. `uv run ruff check .`
@@ -89,12 +100,10 @@ Nothing in the repository plans these; it has no roadmap.
 4. a build of the image for `linux/amd64`
 5. on a `v*` tag only, a push of `ghcr.io/egoushka/switchboard:<version>`
 
-It does not run the smoke test.
-
 ## Versions and files
 
 - Version 0.1.0 in [pyproject.toml](../../pyproject.toml) and [`__init__.py`](../../src/switchboard/__init__.py), tagged `v0.1.0`.
 - Python 3.13 or later. The four runtime dependencies are pinned exactly: `mcp` 2.2.0, `jmespath` 1.1.0, `pyyaml` 6.0.3 and `prometheus-client` 0.26.0; [uv.lock](../../uv.lock) pins the rest.
 - The image is `python:3.13-slim` with uv 0.11, runs as user 65534 and exposes ports 8000 and 9109 ([Dockerfile](../../Dockerfile)).
 - The smoke test pins agentgateway v1.5.0 by digest ([compose.yaml](../../tests/smoke/compose.yaml)).
-- The repository has no license file, no changelog and no architecture decision records. The reasons behind each guard are in the bodies of its [`fix:` commits](https://github.com/Egoushka/switchboard/commits/main).
+- The repository has an MIT [LICENSE](../../LICENSE) and a [CHANGELOG.md](../../CHANGELOG.md), and no architecture decision records. The reasons behind each guard are in the bodies of its [`fix:` commits](https://github.com/Egoushka/switchboard/commits/main).

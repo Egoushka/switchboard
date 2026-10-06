@@ -62,10 +62,11 @@ servers:                                      # keyed by the gateway's target na
 
 Secret values come from the env vars the file names. MCP listens on `:8000`,
 Prometheus on `:9109`. Set `SWITCHBOARD_CONFIG` to the file's path.
+`SWITCHBOARD_TELEGRAM_API` overrides the Bot API URL.
 
 ## Run
 
 - Tests: `uv sync && uv run pytest`
-- Smoke test through a real agentgateway:
+- Smoke test through a real agentgateway, with writes and a fake Telegram (CI runs it):
   `docker build -t switchboard:dev . && docker compose -f tests/smoke/compose.yaml up -d && uv run python tests/smoke/check.py`
 - Measure a route's tool definitions: `MCP_KEY=... uv run scripts/measure.py <url>`
