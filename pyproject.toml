@@ -7,9 +7,9 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
-    "mcp==2.2.0",
+    "mcp==2.3.0",
     "jmespath==1.1.0",
-    "pyyaml==6.0.3",
+    "pyyaml==6.0.4",
     "prometheus-client==0.26.0",
 ]
 
@@ -17,7 +17,7 @@ dependencies = [
 switchboard = "switchboard.__main__:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "ruff>=0.13"]
+dev = ["pytest>=9.2.0", "ruff>=0.17.6"]
 
 [build-system]
 requires = ["hatchling"]
